@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>QR Label Printer — DYMO 30340</title>
+<script>
+  // Detect standalone print-window mode as early as possible, BEFORE loading Grist's plugin
+  // API script. That script expects to run inside Grist's iframe and do a handshake with the
+  // parent window; loaded in a plain top-level tab (which is exactly what happens when the
+  // "Open Print Window" button is used to work around Chrome's iframe local-network-access
+  // restriction) it can hang waiting for a parent that doesn't exist — and since <script src>
+  // tags block HTML parsing until they finish, that hang was leaving the whole page blank.
+  // Loading it dynamically, only when actually embedded, avoids that entirely.
+  window.__isStandalonePrintWindow = /[?&](lot|item|desc|payload)=/.test(window.location.search);
+  if (!window.__isStandalonePrintWindow) {
+    document.write('<scr' + 'ipt src="https://docs.getgrist.com/grist-plugin-api.js"></scr' + 'ipt>');
+  }
+</script>
+<!-- DYMO Connect JavaScript SDK, served with the correct JS mime type via jsDelivr from the
+     official dymosoftware/dymo-connect-framework GitHub repo. If your network blocks jsDelivr,
+     download dymo.connect.framework.js from that repo and host it next to this file instead. -->
+<script src="https://cdn.jsdelivr.net/gh/dymosoftware/dymo-connect-framework/dymo.connect.framework.js"></script>
+<style>
+  :root {
+    --border: #d7dce2;
+    --bg: #f7f8fa;
+    --accent: #2e6cf6;
+    --accent-dark: #1d4ed8;
+    --ok: #1a7f37;
+    --err: #c1272d;
+    --text: #1f2328;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text);
+    background: #fff;
+    font-size: 13px;
+  }
+  #topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  #topbar label { color: var(--muted); font-size: 12px; }
+  select, button {
+    font-size: 13px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #fff;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  #printBtn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    font-weight: 600;
+    padding: 7px 16px;
+    cursor: pointer;
+  }
+  #printBtn:hover { background: var(--accent-dark); }
+  #printBtn:disabled { background: #a9b6c9; cursor: not-allowed; }
+  #status { margin-left: auto; font-size: 12px; }
+  #status.ok { color: var(--ok); }
+  #status.err { color: var(--err); }
+  #status.warn { color: #b45309; }
+
+  #main {
+    display: flex;
+    gap: 0;
+    height: calc(100vh - 46px);
+  }
+  #leftPane, #rightPane {
+    flex: 1;
+    padding: 16px;
+    overflow: auto;
+  }
+  #leftPane {
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 14px;
+  }
+  #paneTitle {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    align-self: flex-start;
+  }
+  #overridesRow {
+    align-self: flex-start;
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .fieldGroup { display: flex; flex-direction: column; gap: 4px; }
+  .fieldGroup label { font-size: 11px; color: var(--muted); }
+  .fieldGroup input[type="number"] {
+    width: 110px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  #resetOverridesBtn { padding: 5px 10px; font-size: 12px; }
+  #labelPreviewBox {
+    width: 340px;
+    height: 110px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: repeating-conic-gradient(#f0f2f5 0% 25%, #ffffff 0% 50%) 50% / 16px 16px;
+  }
+  #labelPreviewBox img {
+    max-width: 100%;
+    max-height: 100%;
+  }
+  #previewPlaceholder { color: var(--muted); font-size: 12px; text-align: center; padding: 12px; }
+
+  #debugPane {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #debugPane .k { color: var(--muted); }
+  #debugPane .warnline { color: #b45309; }
+  #noPrintNote {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 8px;
+  }
+  #noRecord {
+    color: var(--muted);
+    padding: 24px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <label for="printerSelect">Printer:</label>
+  <select id="printerSelect"></select>
+  <button id="refreshBtn" title="Re-check DYMO service and printers">Refresh</button>
+  <button id="printBtn" disabled>Print Label</button>
+  <button id="openStandaloneBtn" style="display:none" title="Opens this label in a new tab, outside Grist's iframe — needed because Chrome blocks local-network/printer access from inside embedded iframes">Open Print Window ↗</button>
+  <div id="status">Starting…</div>
+</div>
+<div id="standaloneNote" style="display:none; background:#eef4ff; border-bottom:1px solid var(--border); padding:6px 12px; font-size:12px; color:var(--muted);">
+  Standalone print window — data passed in from Grist. Close this tab when done printing.
+</div>
+
+<div id="main">
+  <div id="leftPane">
+    <div id="paneTitle">Label preview (1-1/8&quot; × 3-1/2&quot; — DYMO 30340)</div>
+    <div id="overridesRow">
+      <div class="fieldGroup">
+        <label for="lotInput">Lot #</label>
+        <input type="number" id="lotInput" step="1" inputmode="numeric" />
+      </div>
+      <div class="fieldGroup">
+        <label for="itemInput">Item #</label>
+        <input type="number" id="itemInput" step="1" inputmode="numeric" />
+      </div>
+      <button id="resetOverridesBtn" title="Reset both fields back to the selected record's values">Reset to record</button>
+    </div>
+    <div id="labelPreviewBox">
+      <div id="previewPlaceholder">No preview yet</div>
+    </div>
+    <div id="noPrintNote">This is a rendered preview from the DYMO service — nothing is sent to the printer until you click "Print Label".</div>
+  </div>
+
+  <div id="rightPane">
+    <div id="paneTitle">Human-readable debug (not printed)</div>
+    <div id="debugPane">Waiting for a selected record…</div>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   CONFIG
+   ========================================================================= */
+
+// Delimiter used inside the QR payload between fields.
+const DELIM = ";";
+// Max characters allowed for the Description segment of the QR payload.
+const DESC_MAX = 15;
+
+/*
+ * LABEL XML TEMPLATE — DYMO 30340 (1-1/8" x 3-1/2"), real export from DYMO Connect
+ * ----------------------------------------------------------------------------
+ * This is a real label exported from DYMO Connect's own "Address30340" preset (not a
+ * hand-built guess) — its LabelName, DYMORect, and QRCodeObject layout are exactly what
+ * DYMO Connect's print service expects, so this should print correctly without further
+ * adjustment. If you ever want to redesign the layout (e.g. add a text line), repeat the
+ * same process: design it in DYMO Connect, save as .dymo, open that file in a text editor,
+ * copy the XML here, and put the {{QRDATA}} token everywhere the QR object's literal text
+ * value appears (there are two spots below: <DataString> and <TextDataHolder><Value>).
+ */
+let LABEL_XML_TEMPLATE = `<?xml version="1.0" encoding="utf-8"?>
+<DesktopLabel Version="1">
+  <DYMOLabel Version="4">
+    <Description>DYMO Label</Description>
+    <Orientation>Landscape</Orientation>
+    <LabelName>Address30340</LabelName>
+    <InitialLength>0</InitialLength>
+    <BorderStyle>SolidLine</BorderStyle>
+    <DYMORect>
+      <DYMOPoint>
+        <X>0.23</X>
+        <Y>0.060000002</Y>
+      </DYMOPoint>
+      <Size>
+        <Width>3.21</Width>
+        <Height>0.9966666</Height>
+      </Size>
+    </DYMORect>
+    <BorderColor>
+      <SolidColorBrush>
+        <Color A="1" R="0" G="0" B="0"></Color>
+      </SolidColorBrush>
+    </BorderColor>
+    <BorderThickness>1</BorderThickness>
+    <Show_Border>False</Show_Border>
+    <HasFixedLength>False</HasFixedLength>
+    <FixedLengthValue>0</FixedLengthValue>
+    <DynamicLayoutManager>
+      <RotationBehavior>ClearObjects</RotationBehavior>
+      <LabelObjects>
+        <QRCodeObject>
+          <Name>QRCodeObject0</Name>
+          <Brushes>
+            <BackgroundBrush>
+              <SolidColorBrush>
+                <Color A="1" R="1" G="1" B="1"></Color>
+              </SolidColorBrush>
+            </BackgroundBrush>
+            <BorderBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BorderBrush>
+            <StrokeBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </StrokeBrush>
+            <FillBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </FillBrush>
+          </Brushes>
+          <Rotation>Rotation0</Rotation>
+          <OutlineThickness>1</OutlineThickness>
+          <IsOutlined>False</IsOutlined>
+          <BorderStyle>SolidLine</BorderStyle>
+          <Margin>
+            <DYMOThickness Left="0" Top="0" Right="0" Bottom="0" />
+          </Margin>
+          <BarcodeFormat>QRCode</BarcodeFormat>
+          <Data>
+            <DataString>{{QRDATA}}</DataString>
+          </Data>
+          <HorizontalAlignment>Center</HorizontalAlignment>
+          <VerticalAlignment>Middle</VerticalAlignment>
+          <Size>AutoFit</Size>
+          <EQRCodeType>QRCodeText</EQRCodeType>
+          <TextDataHolder>
+            <Value>{{QRDATA}}</Value>
+          </TextDataHolder>
+          <ObjectLayout>
+            <DYMOPoint>
+              <X>1.2508363</X>
+              <Y>0.07</Y>
+            </DYMOPoint>
+            <Size>
+              <Width>1.1479205</Width>
+              <Height>0.9925</Height>
+            </Size>
+          </ObjectLayout>
+        </QRCodeObject>
+      </LabelObjects>
+    </DynamicLayoutManager>
+  </DYMOLabel>
+  <LabelApplication>Blank</LabelApplication>
+  <DataTable>
+    <Columns></Columns>
+    <Rows></Rows>
+  </DataTable>
+</DesktopLabel>`;
+
+/* =========================================================================
+   STATE
+   ========================================================================= */
+let dymoReady = false;
+let printers = [];
+let lastRecord = null;
+let lastMapped = null;
+// The Lot/Item values that came from the currently selected record, used to detect
+// whether the user has manually overridden the number inputs for this print job.
+let recordLot = "";
+let recordItem = "";
+
+/* =========================================================================
+   DOM SHORTCUTS
+   ========================================================================= */
+const $status = document.getElementById("status");
+const $printerSelect = document.getElementById("printerSelect");
+const $printBtn = document.getElementById("printBtn");
+const $refreshBtn = document.getElementById("refreshBtn");
+const $previewBox = document.getElementById("labelPreviewBox");
+const $debugPane = document.getElementById("debugPane");
+const $lotInput = document.getElementById("lotInput");
+const $itemInput = document.getElementById("itemInput");
+const $resetOverridesBtn = document.getElementById("resetOverridesBtn");
+const $openStandaloneBtn = document.getElementById("openStandaloneBtn");
+const $standaloneNote = document.getElementById("standaloneNote");
+
+// Chrome (v142+) blocks pages running inside an iframe from reaching local devices like the
+// DYMO service at 127.0.0.1, unless the page embedding the iframe explicitly opts in. Grist's
+// widget iframe does not, and we can't change that from here. Opening this same page as a
+// plain top-level tab sidesteps the restriction, since a top-level page CAN show Chrome's
+// "allow local network access" permission prompt directly. When opened that way we read the
+// record's data from the URL instead of from Grist.
+const inIframe = window.self !== window.top;
+const urlParams = new URLSearchParams(window.location.search);
+const isStandalone = window.__isStandalonePrintWindow === true;
+
+function setStatus(msg, kind) {
+  $status.textContent = msg;
+  $status.className = kind || "";
+}
+
+/* =========================================================================
+   GRIST SETUP
+   ========================================================================= */
+/* =========================================================================
+   GRIST SETUP (skipped entirely in standalone print-window mode)
+   ========================================================================= */
+if (isStandalone) {
+  $standaloneNote.style.display = "block";
+  recordLot = extractDigits(urlParams.get("lot"));
+  recordItem = extractDigits(urlParams.get("item"));
+  $lotInput.value = recordLot;
+  $itemInput.value = recordItem;
+  lastRecord = {}; // placeholder the rest of the code stashes ._xml onto
+  lastMapped = {
+    Lot: urlParams.get("lot") || "",
+    ItemNumber: urlParams.get("item") || "",
+    Description: urlParams.get("desc") || "",
+    QRPayload: urlParams.get("payload") || ""
+  };
+  recompute();
+} else {
+  grist.ready({
+    columns: [
+      { name: "Lot", title: "Lot", type: "Any" },
+      { name: "ItemNumber", title: "Item Number", type: "Any" },
+      { name: "Description", title: "Description", type: "Any" },
+      // Optional: point this at a Python formula column that already builds the
+      // full "Lot;ItemNumber;Description" payload, if you set one up (recommended).
+      { name: "QRPayload", title: "QR Payload (optional)", type: "Any", optional: true }
+    ],
+    requiredAccess: "read table"
+  });
+
+  grist.onRecord(function (record, mappings) {
+    const mapped = grist.mapColumnNames(record, mappings);
+    if (!mapped) {
+      lastRecord = null;
+      showNoRecordMessage("Map the Lot, Item Number, and Description columns in the widget's Data Selection panel.");
+      return;
+    }
+    lastRecord = record;
+    lastMapped = mapped;
+
+    // Pull the record's Lot / Item Number into the editable number fields. Only digits are
+    // kept (a leading "L-" or similar prefix in the source data won't fit a <input type="number">) —
+    // the human-readable debug pane will flag it if something got stripped.
+    recordLot = extractDigits(mapped.Lot);
+    recordItem = extractDigits(mapped.ItemNumber);
+    $lotInput.value = recordLot;
+    $itemInput.value = recordItem;
+
+    recompute();
+
+    if (inIframe) {
+      $openStandaloneBtn.style.display = "";
+      $openStandaloneBtn.disabled = false;
+    }
+  });
+}
+
+function extractDigits(v) {
+  const s = (v ?? "").toString().trim();
+  const digits = s.replace(/[^0-9]/g, "");
+  return digits;
+}
+
+function openStandaloneWindow() {
+  if (!lastMapped) return;
+  const u = new URL(window.location.href.split("?")[0]);
+  u.searchParams.set("lot", $lotInput.value || "");
+  u.searchParams.set("item", $itemInput.value || "");
+  u.searchParams.set("desc", lastMapped.Description || "");
+  if (lastMapped.QRPayload) u.searchParams.set("payload", lastMapped.QRPayload);
+  window.open(u.toString(), "_blank");
+}
+
+function showNoRecordMessage(msg) {
+  $debugPane.innerHTML = `<span class="warnline">${escapeHtml(msg)}</span>`;
+  $previewBox.innerHTML = `<div id="previewPlaceholder">No record selected</div>`;
+  $lotInput.value = "";
+  $itemInput.value = "";
+  recordLot = "";
+  recordItem = "";
+  $printBtn.disabled = true;
+}
+
+/* =========================================================================
+   BUILD QR PAYLOAD + DEBUG TEXT
+   ========================================================================= */
+function buildPayload(mapped) {
+  const lotFromInput = $lotInput.value.trim();
+  const itemFromInput = $itemInput.value.trim();
+  const overridden = (lotFromInput !== recordLot) || (itemFromInput !== recordItem);
+
+  const rawLot = lotFromInput;
+  const rawItem = itemFromInput;
+  const rawDesc = (mapped.Description ?? "").toString().trim();
+
+  const warnings = [];
+  if (overridden) {
+    warnings.push("Lot and/or Item Number selected below differ from the record — this label will NOT match the stored data.");
+  }
+
+  // A precomputed QRPayload column (e.g. from a Python formula) is only trustworthy when the
+  // user hasn't overridden Lot/Item here, since that column was computed from the record as-is.
+  if (!overridden && mapped.QRPayload && mapped.QRPayload.toString().trim()) {
+    return {
+      payload: mapped.QRPayload.toString().trim(),
+      lot: rawLot, item: rawItem, desc: rawDesc,
+      descTruncated: rawDesc, source: "QRPayload column", overridden, warnings
+    };
+  }
+
+  // Otherwise, build the payload here, mirroring the same rules a Python formula should use:
+  // strip the delimiter out of each field (so it can't be mistaken for a field boundary),
+  // then truncate the description to DESC_MAX characters.
+  const clean = (v) => v.split(DELIM).join(",");
+  const lot = clean(rawLot);
+  const item = clean(rawItem);
+  let desc = clean(rawDesc);
+
+  if (desc.length > DESC_MAX) {
+    warnings.push(`Description truncated from ${desc.length} to ${DESC_MAX} characters.`);
+    desc = desc.slice(0, DESC_MAX);
+  }
+  if (!lot) warnings.push("Lot is empty.");
+  if (!item) warnings.push("Item Number is empty.");
+
+  const payload = [lot, item, desc].join(DELIM);
+  const source = overridden ? "manually selected (Lot/Item override)" : "built in widget";
+  return { payload, lot: rawLot, item: rawItem, desc: rawDesc, descTruncated: desc, source, overridden, warnings };
+}
+
+function renderDebug(built) {
+  const lines = [];
+  lines.push(`<span class="k">Source:</span>       ${escapeHtml(built.source)}`);
+  lines.push(`<span class="k">Lot:</span>          ${escapeHtml(built.lot || "(empty)")}`);
+  lines.push(`<span class="k">Item Number:</span>  ${escapeHtml(built.item || "(empty)")}`);
+  lines.push(`<span class="k">Description:</span>  ${escapeHtml(built.desc || "(empty)")}`);
+  lines.push(`<span class="k">Desc (≤${DESC_MAX}):</span>  ${escapeHtml(built.descTruncated)}  (${built.descTruncated.length} chars)`);
+  lines.push("");
+  lines.push(`<span class="k">QR payload:</span>   ${escapeHtml(built.payload)}`);
+  lines.push(`<span class="k">Payload length:</span> ${built.payload.length} chars`);
+  if (built.warnings.length) {
+    lines.push("");
+    built.warnings.forEach(w => lines.push(`<span class="warnline">⚠ ${escapeHtml(w)}</span>`));
+  }
+  $debugPane.innerHTML = lines.join("\n");
+}
+
+function escapeHtml(s) {
+  return s.toString()
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeXml(s) {
+  return s.toString()
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+/* =========================================================================
+   LABEL XML + DYMO CALLS
+   ========================================================================= */
+function buildLabelXml(qrPayload) {
+  // split/join replaces every {{QRDATA}} occurrence — this template has two (the barcode's
+  // actual data and its linked text-data holder). A plain .replace() only hits the first one,
+  // which would leave a literal "{{QRDATA}}" string baked into the printed label.
+  return LABEL_XML_TEMPLATE.split("{{QRDATA}}").join(escapeXml(qrPayload));
+}
+
+function selectedPrinterName() {
+  return $printerSelect.value || (printers[0] && printers[0].name) || "";
+}
+
+function renderPreview(xml) {
+  if (!dymoReady) return;
+  try {
+    const png = dymo.label.framework.renderLabel(xml, null, selectedPrinterName());
+    $previewBox.innerHTML = `<img src="data:image/png;base64,${png}" alt="Label preview" />`;
+  } catch (e) {
+    $previewBox.innerHTML = `<div id="previewPlaceholder">Preview failed: ${escapeHtml(e.message || e)}</div>`;
+  }
+}
+
+function recompute() {
+  if (!lastMapped || !lastRecord) return;
+  const built = buildPayload(lastMapped);
+  renderDebug(built);
+  const xml = buildLabelXml(built.payload);
+  lastRecord._xml = xml; // stash for the print button
+  $printBtn.disabled = !dymoReady || !printers.length;
+  renderPreview(xml);
+}
+
+function printCurrentLabel() {
+  if (!lastRecord || !lastRecord._xml) return;
+  const printerName = selectedPrinterName();
+  if (!printerName) {
+    setStatus("No printer selected.", "err");
+    return;
+  }
+  $printBtn.disabled = true;
+  setStatus("Printing…", "warn");
+  try {
+    dymo.label.framework.printLabel(printerName, null, lastRecord._xml, null);
+    setStatus(`Sent to ${printerName}`, "ok");
+  } catch (e) {
+    setStatus(`Print failed: ${e.message || e}`, "err");
+  } finally {
+    $printBtn.disabled = !dymoReady || !printers.length;
+  }
+}
+
+/* =========================================================================
+   DYMO SERVICE INIT
+   ========================================================================= */
+function initDymo() {
+  setStatus("Connecting to DYMO service…", "warn");
+  // The DYMO SDK caches whichever host (127.0.0.1 vs the legacy "localhost") it discovered
+  // last time in localStorage/cookies, and reuses it without re-checking. If that cache is
+  // stale and points at "localhost", Chrome's Private Network Access protection blocks it
+  // (a hostname can't be verified as local the way a literal IP can), which looks like a
+  // CORS error in the console. Clearing the cache here forces a fresh discovery every load,
+  // which always tries the 127.0.0.1 literal first.
+  try {
+    localStorage.removeItem("ServicePort");
+    localStorage.removeItem("ServiceHost");
+  } catch (e) { /* localStorage unavailable — ignore, SDK will fall back to cookies */ }
+  try {
+    dymo.label.framework.init(function () {
+      const envInfo = dymo.label.framework.checkEnvironment();
+      if (!envInfo.isFrameworkInstalled) {
+        setStatus("DYMO Connect software is not detected on this computer.", "err");
+        dymoReady = false;
+        return;
+      }
+      dymoReady = true;
+      loadPrinters();
+    });
+  } catch (e) {
+    setStatus(`DYMO init error: ${e.message || e}`, "err");
+    dymoReady = false;
+  }
+}
+
+function loadPrinters() {
+  try {
+    const allPrinters = dymo.label.framework.getPrinters();
+    printers = allPrinters.filter(p => p.printerType === "LabelWriterPrinter" || p.isLabelWriterPrinter || true);
+    $printerSelect.innerHTML = "";
+    if (!printers.length) {
+      setStatus("No DYMO printers found. Is it plugged in and turned on?", "err");
+      $printBtn.disabled = true;
+      return;
+    }
+    printers.forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.name + (p.isConnected === false ? " (offline)" : "");
+      $printerSelect.appendChild(opt);
+    });
+    setStatus(`Connected — ${printers.length} printer(s) found.`, "ok");
+    if (lastRecord && lastRecord._xml) {
+      renderPreview(lastRecord._xml);
+    }
+    $printBtn.disabled = !lastRecord;
+  } catch (e) {
+    setStatus(`Could not list printers: ${e.message || e}`, "err");
+  }
+}
+
+$printBtn.addEventListener("click", printCurrentLabel);
+$refreshBtn.addEventListener("click", initDymo);
+$printerSelect.addEventListener("change", () => {
+  if (lastRecord && lastRecord._xml) renderPreview(lastRecord._xml);
+});
+$lotInput.addEventListener("input", recompute);
+$itemInput.addEventListener("input", recompute);
+$resetOverridesBtn.addEventListener("click", () => {
+  $lotInput.value = recordLot;
+  $itemInput.value = recordItem;
+  recompute();
+});
+$openStandaloneBtn.addEventListener("click", openStandaloneWindow);
+
+window.addEventListener("load", initDymo);
+</script>
+</body>
+</html>
