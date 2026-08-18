@@ -75,40 +75,34 @@
 
   #main {
     display: flex;
-    gap: 0;
-    height: calc(100vh - 46px);
-  }
-  #leftPane, #rightPane {
-    flex: 1;
-    padding: 16px;
-    overflow: auto;
+    max-width: 300px;
+    margin: 0 auto;
   }
   #leftPane {
-    border-right: 1px solid var(--border);
+    flex: 1;
+    min-width: 0;
+    padding: 12px;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 14px;
+    align-items: stretch;
+    gap: 10px;
   }
   #paneTitle {
-    font-size: 12px;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: .04em;
     color: var(--muted);
-    align-self: flex-start;
   }
   #overridesRow {
-    align-self: flex-start;
     display: flex;
     align-items: flex-end;
-    gap: 14px;
+    gap: 10px;
     flex-wrap: wrap;
   }
   .fieldGroup { display: flex; flex-direction: column; gap: 4px; }
   .fieldGroup label { font-size: 11px; color: var(--muted); }
   .fieldGroup input[type="number"] {
-    width: 110px;
+    width: 84px;
     padding: 5px 8px;
     border-radius: 6px;
     border: 1px solid var(--border);
@@ -116,8 +110,8 @@
   }
   #resetOverridesBtn { padding: 5px 10px; font-size: 12px; }
   #labelPreviewBox {
-    width: 340px;
-    height: 110px;
+    width: 100%;
+    aspect-ratio: 3.21 / 0.9966666;
     border: 1px solid var(--border);
     border-radius: 8px;
     display: flex;
@@ -131,23 +125,18 @@
   }
   #previewPlaceholder { color: var(--muted); font-size: 12px; text-align: center; padding: 12px; }
 
-  #debugPane {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12.5px;
-    line-height: 1.6;
-    white-space: pre-wrap;
-    word-break: break-word;
+  #warningBanner {
+    background: #fff8ec;
+    border: 1px solid #f0d9a8;
+    color: #92610b;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 11.5px;
+    line-height: 1.4;
   }
-  #debugPane .k { color: var(--muted); }
-  #debugPane .warnline { color: #b45309; }
   #noPrintNote {
     color: var(--muted);
     font-size: 11px;
-    margin-top: 8px;
   }
   #noRecord {
     color: var(--muted);
@@ -187,12 +176,8 @@
     <div id="labelPreviewBox">
       <div id="previewPlaceholder">No preview yet</div>
     </div>
+    <div id="warningBanner" style="display:none;"></div>
     <div id="noPrintNote">This is a rendered preview from the DYMO service — nothing is sent to the printer until you click "Print Label".</div>
-  </div>
-
-  <div id="rightPane">
-    <div id="paneTitle">Human-readable debug (not printed)</div>
-    <div id="debugPane">Waiting for a selected record…</div>
   </div>
 </div>
 
@@ -203,19 +188,21 @@
 
 // Delimiter used inside the QR payload between fields.
 const DELIM = ";";
-// Max characters allowed for the Description segment of the QR payload.
-const DESC_MAX = 15;
+// Max characters allowed for the Description segment of the QR payload and the printed
+// description text line.
+const DESC_MAX = 25;
 
 /*
- * LABEL XML TEMPLATE — DYMO 30340 (1-1/8" x 3-1/2"), real export from DYMO Connect
- * ----------------------------------------------------------------------------
- * This is a real label exported from DYMO Connect's own "Address30340" preset (not a
- * hand-built guess) — its LabelName, DYMORect, and QRCodeObject layout are exactly what
- * DYMO Connect's print service expects, so this should print correctly without further
- * adjustment. If you ever want to redesign the layout (e.g. add a text line), repeat the
- * same process: design it in DYMO Connect, save as .dymo, open that file in a text editor,
- * copy the XML here, and put the {{QRDATA}} token everywhere the QR object's literal text
- * value appears (there are two spots below: <DataString> and <TextDataHolder><Value>).
+ * LABEL XML TEMPLATE — DYMO 30340 (1-1/8" x 3-1/2"), V2 export from DYMO Connect
+ * -------------------------------------------------------------------------
+ * Real label exported from DYMO Connect, now with human-readable text next to the QR code:
+ * "Item: ...", "Lot: ...", and the description, plus a "$" symbol and divider line that were
+ * already part of this design (left untouched — not part of what was asked for, but easy to
+ * remove later if it's not wanted: just delete that TextObject/LineObject block below).
+ * Same process as before if you want to redesign the layout: edit in DYMO Connect, save as
+ * .dymo, open in a text editor, copy the XML here, and replace each field's literal text with
+ * the matching {{...}} token: {{QRDATA}} (barcode data, appears twice), {{ITEM}}, {{LOT}},
+ * {{DESC}}.
  */
 let LABEL_XML_TEMPLATE = `<?xml version="1.0" encoding="utf-8"?>
 <DesktopLabel Version="1">
@@ -291,8 +278,8 @@ let LABEL_XML_TEMPLATE = `<?xml version="1.0" encoding="utf-8"?>
           </TextDataHolder>
           <ObjectLayout>
             <DYMOPoint>
-              <X>1.2508363</X>
-              <Y>0.07</Y>
+              <X>0.24000001</X>
+              <Y>0.07000001</Y>
             </DYMOPoint>
             <Size>
               <Width>1.1479205</Width>
@@ -300,6 +287,327 @@ let LABEL_XML_TEMPLATE = `<?xml version="1.0" encoding="utf-8"?>
             </Size>
           </ObjectLayout>
         </QRCodeObject>
+        <TextObject>
+          <Name>TextObject0</Name>
+          <Brushes>
+            <BackgroundBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BackgroundBrush>
+            <BorderBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BorderBrush>
+            <StrokeBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </StrokeBrush>
+            <FillBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </FillBrush>
+          </Brushes>
+          <Rotation>Rotation0</Rotation>
+          <OutlineThickness>1</OutlineThickness>
+          <IsOutlined>False</IsOutlined>
+          <BorderStyle>SolidLine</BorderStyle>
+          <Margin>
+            <DYMOThickness Left="0" Top="0" Right="0" Bottom="0" />
+          </Margin>
+          <HorizontalAlignment>Left</HorizontalAlignment>
+          <VerticalAlignment>Middle</VerticalAlignment>
+          <FitMode>AlwaysFit</FitMode>
+          <IsVertical>False</IsVertical>
+          <FormattedText>
+            <FitMode>AlwaysFit</FitMode>
+            <HorizontalAlignment>Left</HorizontalAlignment>
+            <VerticalAlignment>Middle</VerticalAlignment>
+            <IsVertical>False</IsVertical>
+            <LineTextSpan>
+              <TextSpan>
+                <Text>Item: {{ITEM}}</Text>
+                <FontInfo>
+                  <FontName>Segoe UI</FontName>
+                  <FontSize>12.2</FontSize>
+                  <IsBold>False</IsBold>
+                  <IsItalic>False</IsItalic>
+                  <IsUnderline>False</IsUnderline>
+                  <FontBrush>
+                    <SolidColorBrush>
+                      <Color A="1" R="0" G="0" B="0"></Color>
+                    </SolidColorBrush>
+                  </FontBrush>
+                </FontInfo>
+              </TextSpan>
+            </LineTextSpan>
+          </FormattedText>
+          <ObjectLayout>
+            <DYMOPoint>
+              <X>1.4508399</X>
+              <Y>0.07</Y>
+            </DYMOPoint>
+            <Size>
+              <Width>0.8593948</Width>
+              <Height>0.28451845</Height>
+            </Size>
+          </ObjectLayout>
+        </TextObject>
+        <TextObject>
+          <Name>TextObject1</Name>
+          <Brushes>
+            <BackgroundBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BackgroundBrush>
+            <BorderBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BorderBrush>
+            <StrokeBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </StrokeBrush>
+            <FillBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </FillBrush>
+          </Brushes>
+          <Rotation>Rotation0</Rotation>
+          <OutlineThickness>1</OutlineThickness>
+          <IsOutlined>False</IsOutlined>
+          <BorderStyle>SolidLine</BorderStyle>
+          <Margin>
+            <DYMOThickness Left="0" Top="0" Right="0" Bottom="0" />
+          </Margin>
+          <HorizontalAlignment>Left</HorizontalAlignment>
+          <VerticalAlignment>Middle</VerticalAlignment>
+          <FitMode>AlwaysFit</FitMode>
+          <IsVertical>False</IsVertical>
+          <FormattedText>
+            <FitMode>AlwaysFit</FitMode>
+            <HorizontalAlignment>Left</HorizontalAlignment>
+            <VerticalAlignment>Middle</VerticalAlignment>
+            <IsVertical>False</IsVertical>
+            <LineTextSpan>
+              <TextSpan>
+                <Text>Lot: {{LOT}}</Text>
+                <FontInfo>
+                  <FontName>Segoe UI</FontName>
+                  <FontSize>14.7</FontSize>
+                  <IsBold>False</IsBold>
+                  <IsItalic>False</IsItalic>
+                  <IsUnderline>False</IsUnderline>
+                  <FontBrush>
+                    <SolidColorBrush>
+                      <Color A="1" R="0" G="0" B="0"></Color>
+                    </SolidColorBrush>
+                  </FontBrush>
+                </FontInfo>
+              </TextSpan>
+            </LineTextSpan>
+          </FormattedText>
+          <ObjectLayout>
+            <DYMOPoint>
+              <X>2.3849187</X>
+              <Y>0.07000001</Y>
+            </DYMOPoint>
+            <Size>
+              <Width>0.93066067</Width>
+              <Height>0.27848703</Height>
+            </Size>
+          </ObjectLayout>
+        </TextObject>
+        <TextObject>
+          <Name>TextObject2</Name>
+          <Brushes>
+            <BackgroundBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BackgroundBrush>
+            <BorderBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BorderBrush>
+            <StrokeBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </StrokeBrush>
+            <FillBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </FillBrush>
+          </Brushes>
+          <Rotation>Rotation0</Rotation>
+          <OutlineThickness>1</OutlineThickness>
+          <IsOutlined>False</IsOutlined>
+          <BorderStyle>SolidLine</BorderStyle>
+          <Margin>
+            <DYMOThickness Left="0" Top="0" Right="0" Bottom="0" />
+          </Margin>
+          <HorizontalAlignment>Left</HorizontalAlignment>
+          <VerticalAlignment>Middle</VerticalAlignment>
+          <FitMode>AlwaysFit</FitMode>
+          <IsVertical>False</IsVertical>
+          <FormattedText>
+            <FitMode>AlwaysFit</FitMode>
+            <HorizontalAlignment>Left</HorizontalAlignment>
+            <VerticalAlignment>Middle</VerticalAlignment>
+            <IsVertical>False</IsVertical>
+            <LineTextSpan>
+              <TextSpan>
+                <Text>{{DESC}}</Text>
+                <FontInfo>
+                  <FontName>Segoe UI</FontName>
+                  <FontSize>11.1</FontSize>
+                  <IsBold>False</IsBold>
+                  <IsItalic>False</IsItalic>
+                  <IsUnderline>False</IsUnderline>
+                  <FontBrush>
+                    <SolidColorBrush>
+                      <Color A="1" R="0" G="0" B="0"></Color>
+                    </SolidColorBrush>
+                  </FontBrush>
+                </FontInfo>
+              </TextSpan>
+            </LineTextSpan>
+          </FormattedText>
+          <ObjectLayout>
+            <DYMOPoint>
+              <X>1.5824183</X>
+              <Y>0.34848705</Y>
+            </DYMOPoint>
+            <Size>
+              <Width>1.6050004</Width>
+              <Height>0.3557895</Height>
+            </Size>
+          </ObjectLayout>
+        </TextObject>
+        <TextObject>
+          <Name>TextObject3</Name>
+          <Brushes>
+            <BackgroundBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BackgroundBrush>
+            <BorderBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BorderBrush>
+            <StrokeBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </StrokeBrush>
+            <FillBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </FillBrush>
+          </Brushes>
+          <Rotation>Rotation0</Rotation>
+          <OutlineThickness>1</OutlineThickness>
+          <IsOutlined>False</IsOutlined>
+          <BorderStyle>SolidLine</BorderStyle>
+          <Margin>
+            <DYMOThickness Left="0" Top="0" Right="0" Bottom="0" />
+          </Margin>
+          <HorizontalAlignment>Left</HorizontalAlignment>
+          <VerticalAlignment>Middle</VerticalAlignment>
+          <FitMode>AlwaysFit</FitMode>
+          <IsVertical>False</IsVertical>
+          <FormattedText>
+            <FitMode>AlwaysFit</FitMode>
+            <HorizontalAlignment>Left</HorizontalAlignment>
+            <VerticalAlignment>Middle</VerticalAlignment>
+            <IsVertical>False</IsVertical>
+            <LineTextSpan>
+              <TextSpan>
+                <Text>$</Text>
+                <FontInfo>
+                  <FontName>Segoe UI</FontName>
+                  <FontSize>26.9</FontSize>
+                  <IsBold>False</IsBold>
+                  <IsItalic>False</IsItalic>
+                  <IsUnderline>False</IsUnderline>
+                  <FontBrush>
+                    <SolidColorBrush>
+                      <Color A="1" R="0" G="0" B="0"></Color>
+                    </SolidColorBrush>
+                  </FontBrush>
+                </FontInfo>
+              </TextSpan>
+            </LineTextSpan>
+          </FormattedText>
+          <ObjectLayout>
+            <DYMOPoint>
+              <X>1.3345833</X>
+              <Y>0.5583333</Y>
+            </DYMOPoint>
+            <Size>
+              <Width>1.605</Width>
+              <Height>0.4983333</Height>
+            </Size>
+          </ObjectLayout>
+        </TextObject>
+        <LineObject>
+          <Name>LineObject0</Name>
+          <Brushes>
+            <BackgroundBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BackgroundBrush>
+            <BorderBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </BorderBrush>
+            <StrokeBrush>
+              <SolidColorBrush>
+                <Color A="1" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </StrokeBrush>
+            <FillBrush>
+              <SolidColorBrush>
+                <Color A="0" R="0" G="0" B="0"></Color>
+              </SolidColorBrush>
+            </FillBrush>
+          </Brushes>
+          <Rotation>Rotation0</Rotation>
+          <OutlineThickness>1</OutlineThickness>
+          <IsOutlined>False</IsOutlined>
+          <BorderStyle>SolidLine</BorderStyle>
+          <Margin>
+            <DYMOThickness Left="0" Top="0" Right="0" Bottom="0" />
+          </Margin>
+          <StrokeWidth>1</StrokeWidth>
+          <DashPattern>SolidLine</DashPattern>
+          <LineType>Horizontal</LineType>
+          <ObjectLayout>
+            <DYMOPoint>
+              <X>1.5077347</X>
+              <Y>0.8916677</Y>
+            </DYMOPoint>
+            <Size>
+              <Width>1.6049999</Width>
+              <Height>0.16500013</Height>
+            </Size>
+          </ObjectLayout>
+        </LineObject>
       </LabelObjects>
     </DynamicLayoutManager>
   </DYMOLabel>
@@ -330,7 +638,7 @@ const $printerSelect = document.getElementById("printerSelect");
 const $printBtn = document.getElementById("printBtn");
 const $refreshBtn = document.getElementById("refreshBtn");
 const $previewBox = document.getElementById("labelPreviewBox");
-const $debugPane = document.getElementById("debugPane");
+const $warningBanner = document.getElementById("warningBanner");
 const $lotInput = document.getElementById("lotInput");
 const $itemInput = document.getElementById("itemInput");
 const $resetOverridesBtn = document.getElementById("resetOverridesBtn");
@@ -429,7 +737,7 @@ function openStandaloneWindow() {
 }
 
 function showNoRecordMessage(msg) {
-  $debugPane.innerHTML = `<span class="warnline">${escapeHtml(msg)}</span>`;
+  updateWarningBanner([msg]);
   $previewBox.innerHTML = `<div id="previewPlaceholder">No record selected</div>`;
   $lotInput.value = "";
   $itemInput.value = "";
@@ -461,7 +769,11 @@ function buildPayload(mapped) {
     return {
       payload: mapped.QRPayload.toString().trim(),
       lot: rawLot, item: rawItem, desc: rawDesc,
-      descTruncated: rawDesc, source: "QRPayload column", overridden, warnings
+      // descTruncated feeds the printed description text object, so it's trimmed to fit the
+      // label regardless of source — even though the QR payload itself is left exactly as the
+      // QRPayload column computed it.
+      descTruncated: rawDesc.length > DESC_MAX ? rawDesc.slice(0, DESC_MAX) : rawDesc,
+      source: "QRPayload column", overridden, warnings
     };
   }
 
@@ -485,21 +797,14 @@ function buildPayload(mapped) {
   return { payload, lot: rawLot, item: rawItem, desc: rawDesc, descTruncated: desc, source, overridden, warnings };
 }
 
-function renderDebug(built) {
-  const lines = [];
-  lines.push(`<span class="k">Source:</span>       ${escapeHtml(built.source)}`);
-  lines.push(`<span class="k">Lot:</span>          ${escapeHtml(built.lot || "(empty)")}`);
-  lines.push(`<span class="k">Item Number:</span>  ${escapeHtml(built.item || "(empty)")}`);
-  lines.push(`<span class="k">Description:</span>  ${escapeHtml(built.desc || "(empty)")}`);
-  lines.push(`<span class="k">Desc (≤${DESC_MAX}):</span>  ${escapeHtml(built.descTruncated)}  (${built.descTruncated.length} chars)`);
-  lines.push("");
-  lines.push(`<span class="k">QR payload:</span>   ${escapeHtml(built.payload)}`);
-  lines.push(`<span class="k">Payload length:</span> ${built.payload.length} chars`);
-  if (built.warnings.length) {
-    lines.push("");
-    built.warnings.forEach(w => lines.push(`<span class="warnline">⚠ ${escapeHtml(w)}</span>`));
+function updateWarningBanner(warnings) {
+  if (!warnings || !warnings.length) {
+    $warningBanner.style.display = "none";
+    $warningBanner.textContent = "";
+    return;
   }
-  $debugPane.innerHTML = lines.join("\n");
+  $warningBanner.style.display = "block";
+  $warningBanner.textContent = "⚠ " + warnings.join(" ");
 }
 
 function escapeHtml(s) {
@@ -517,11 +822,15 @@ function escapeXml(s) {
 /* =========================================================================
    LABEL XML + DYMO CALLS
    ========================================================================= */
-function buildLabelXml(qrPayload) {
-  // split/join replaces every {{QRDATA}} occurrence — this template has two (the barcode's
-  // actual data and its linked text-data holder). A plain .replace() only hits the first one,
-  // which would leave a literal "{{QRDATA}}" string baked into the printed label.
-  return LABEL_XML_TEMPLATE.split("{{QRDATA}}").join(escapeXml(qrPayload));
+function buildLabelXml(built) {
+  // split/join replaces every occurrence of each token — QRDATA appears twice (the barcode's
+  // actual data and its linked text-data holder). A plain .replace() only hits the first
+  // occurrence of a given token, which would leave a literal "{{...}}" string on the label.
+  return LABEL_XML_TEMPLATE
+    .split("{{QRDATA}}").join(escapeXml(built.payload))
+    .split("{{LOT}}").join(escapeXml(built.lot))
+    .split("{{ITEM}}").join(escapeXml(built.item))
+    .split("{{DESC}}").join(escapeXml(built.descTruncated));
 }
 
 function selectedPrinterName() {
@@ -541,8 +850,8 @@ function renderPreview(xml) {
 function recompute() {
   if (!lastMapped || !lastRecord) return;
   const built = buildPayload(lastMapped);
-  renderDebug(built);
-  const xml = buildLabelXml(built.payload);
+  updateWarningBanner(built.warnings);
+  const xml = buildLabelXml(built);
   lastRecord._xml = xml; // stash for the print button
   $printBtn.disabled = !dymoReady || !printers.length;
   renderPreview(xml);
