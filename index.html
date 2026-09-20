@@ -721,6 +721,16 @@ if (isStandalone) {
 }
 
 function extractDigits(v) {
+  // Some Grist column types — Reference columns in particular — hand back list-like values
+  // as JS arrays, often with a leading type-tag before the actual value (Grist's internal
+  // encoding looks roughly like ["R", tableId, rowId] for a Reference). Naively stringifying
+  // an array joins every element with commas, and stripping punctuation afterward then fuses
+  // unrelated numbers together — e.g. ["R", 2, 134] -> "R,2,134" -> "2134", silently
+  // prepending an internal table ID onto what should just be "134". Guard against that by
+  // taking only the LAST element of an array (the actual row/value, never any leading tag).
+  if (Array.isArray(v)) {
+    v = v.length ? v[v.length - 1] : "";
+  }
   const s = (v ?? "").toString().trim();
   const digits = s.replace(/[^0-9]/g, "");
   return digits;
