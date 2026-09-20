@@ -721,6 +721,16 @@ if (isStandalone) {
 }
 
 function extractDigits(v) {
+  // TEMPORARY DIAGNOSTIC — logs the exact raw value Grist hands us so we can see its real
+  // shape/type instead of guessing. Remove this console.log once the "2" issue is solved.
+  try {
+    console.log("[label-widget] extractDigits raw input:",
+      "value=", v,
+      "| typeof=", typeof v,
+      "| isArray=", Array.isArray(v),
+      "| JSON=", JSON.stringify(v));
+  } catch (e) { /* ignore logging failures */ }
+
   // Some Grist column types — Reference columns in particular — hand back list-like values
   // as JS arrays, often with a leading type-tag before the actual value (Grist's internal
   // encoding looks roughly like ["R", tableId, rowId] for a Reference). Naively stringifying
@@ -733,6 +743,11 @@ function extractDigits(v) {
   }
   const s = (v ?? "").toString().trim();
   const digits = s.replace(/[^0-9]/g, "");
+
+  try {
+    console.log("[label-widget] extractDigits result:", digits, "(from string:", s + ")");
+  } catch (e) { /* ignore logging failures */ }
+
   return digits;
 }
 
