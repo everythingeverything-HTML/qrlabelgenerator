@@ -720,35 +720,36 @@ if (isStandalone) {
   });
 }
 
-function extractDigits(v) {
-  // TEMPORARY DIAGNOSTIC — logs the exact raw value Grist hands us so we can see its real
-  // shape/type instead of guessing. Remove this console.log once the "2" issue is solved.
-  try {
-    console.log("[label-widget] extractDigits raw input:",
-      "value=", v,
-      "| typeof=", typeof v,
-      "| isArray=", Array.isArray(v),
-      "| JSON=", JSON.stringify(v));
-  } catch (e) { /* ignore logging failures */ }
+// Safely turn any value Grist hands us into plain display text. Reference columns arrive as
+// {tableId, rowId} objects whose default stringification ("LOT_TRACKING2[134]") leaks the
+// table name into the text, so unwrap those to their rowId rather than stringifying blindly.
+function toPlainText(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object" && !Array.isArray(v) && v.rowId !== undefined) {
+    v = v.rowId;
+  }
+  if (Array.isArray(v)) {
+    v = v.length ? v[v.length - 1] : "";
+  }
+  return v.toString().trim();
+}
 
-  // Some Grist column types — Reference columns in particular — hand back list-like values
-  // as JS arrays, often with a leading type-tag before the actual value (Grist's internal
-  // encoding looks roughly like ["R", tableId, rowId] for a Reference). Naively stringifying
-  // an array joins every element with commas, and stripping punctuation afterward then fuses
-  // unrelated numbers together — e.g. ["R", 2, 134] -> "R,2,134" -> "2134", silently
-  // prepending an internal table ID onto what should just be "134". Guard against that by
-  // taking only the LAST element of an array (the actual row/value, never any leading tag).
+function extractDigits(v) {
+  // Grist hands back a Reference column's value as an object like {tableId, rowId} rather
+  // than a plain number. Stringifying that yields something like "LOT_TRACKING2[1]", and
+  // stripping non-digits then fuses any digit in the TABLE NAME onto the row id — e.g.
+  // LOT_TRACKING2[134] -> "2134", silently prefixing a "2" that comes from "TRACKING2".
+  // So read rowId directly instead of ever stringifying the whole object.
+  if (v && typeof v === "object" && !Array.isArray(v) && v.rowId !== undefined) {
+    v = v.rowId;
+  }
+  // Some Grist values also arrive as arrays with a leading type tag; take the last element,
+  // which is the actual value rather than the tag.
   if (Array.isArray(v)) {
     v = v.length ? v[v.length - 1] : "";
   }
   const s = (v ?? "").toString().trim();
-  const digits = s.replace(/[^0-9]/g, "");
-
-  try {
-    console.log("[label-widget] extractDigits result:", digits, "(from string:", s + ")");
-  } catch (e) { /* ignore logging failures */ }
-
-  return digits;
+  return s.replace(/[^0-9]/g, "");
 }
 
 function openStandaloneWindow() {
@@ -781,7 +782,7 @@ function buildPayload(mapped) {
 
   const rawLot = lotFromInput;
   const rawItem = itemFromInput;
-  const rawDesc = (mapped.Description ?? "").toString().trim();
+  const rawDesc = toPlainText(mapped.Description);
 
   const warnings = [];
   if (overridden) {
